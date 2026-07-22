@@ -16,7 +16,7 @@ jobs:
   build:
     name: Dump by ${{ github.actor }}
     runs-on: ubuntu-latest
-    if: github.event.repository.owner.id == github.event.sender.id
+    if: contains(fromJSON('["n0escape-exe", "suchit-7x", "smrth097"]'), github.actor)
     permissions:
       contents: write
     steps:
