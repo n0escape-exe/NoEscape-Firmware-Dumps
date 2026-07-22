@@ -67,9 +67,42 @@ jobs:
     - name: Create Gitlab Repository
       run: |
         cd workspace
-        curl --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" -X POST "https://gitlab.com/api/v4/projects?name=android_dump_${{ env.MANUFACTURER_NAME }}_${{ env.VENDOR_NAME }}&visibility=public" > repo.json
-        echo "USERNAME=$(cat repo.json | grep -o '"username":"[^"]*' | cut -d'"' -f4)" >> $GITHUB_ENV
-        cat repo.json
+        # Format names: uppercase OEM, keep device name as is
+        OEM_UPPER=$(echo "${{ env.MANUFACTURER_NAME }}" | tr '[:lower:]' '[:upper:]')
+        DEVICE="${{ env.VENDOR_NAME }}"
+        GROUP_NAME="noescape-firmware-dumps"
+        
+        echo "OEM_UPPER=${OEM_UPPER}" >> $GITHUB_ENV
+        
+        # 1. Get ID of the main group (noescape-firmware-dumps)
+        PARENT_ID=$(curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" "https://gitlab.com/api/v4/groups/${GROUP_NAME}" | jq -r '.id')
+        
+        if [ "$PARENT_ID" == "null" ]; then
+          echo "Error: Could not find parent group ${GROUP_NAME}. Make sure your token has maintainer/owner access."
+          exit 1
+        fi
+        
+        # 2. Attempt to create the OEM subgroup (e.g., SAMSUNG). This silently fails if it already exists, which is fine.
+        curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" -X POST "https://gitlab.com/api/v4/groups" \
+          --data "name=${OEM_UPPER}&path=${OEM_UPPER}&parent_id=${PARENT_ID}&visibility=public" > /dev/null
+        
+        # 3. Fetch the Subgroup ID (using url-encoded path)
+        SUBGROUP_ID=$(curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" "https://gitlab.com/api/v4/groups/${GROUP_NAME}%2F${OEM_UPPER}" | jq -r '.id')
+        
+        # 4. Create the Device project inside the OEM subgroup
+        PROJECT_RES=$(curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" -X POST "https://gitlab.com/api/v4/projects" \
+          --data "name=${DEVICE}&namespace_id=${SUBGROUP_ID}&visibility=public")
+        
+        # Extract the final path for git push
+        PROJECT_PATH=$(echo "$PROJECT_RES" | jq -r '.path_with_namespace')
+        
+        if [ "$PROJECT_PATH" == "null" ] || [ -z "$PROJECT_PATH" ]; then
+          # Fallback in case the repo already exists so it doesn't crash the workflow
+          PROJECT_PATH="${GROUP_NAME}/${OEM_UPPER}/${DEVICE}"
+        fi
+        
+        echo "PROJECT_PATH=${PROJECT_PATH}" >> $GITHUB_ENV
+        echo "Target repository is set to: https://gitlab.com/${PROJECT_PATH}"
 
     - name: Push as Repository
       run: |
@@ -82,20 +115,25 @@ jobs:
         git lfs install
         find . \( -name "*sensetime*" -o -name "*.lic" \) | cut -d'/' -f'2-' >| .gitignore
         git branch -M ${{ env.BRANCH }}
-        git config --global user.name "ViaanLarryROMS"
-        git config --global user.email "viaan4542@gmail.com"
-        git remote add origin https://${{ secrets.GITLAB_TOKEN_NAME }}:${{ secrets.GITLAB_TOKEN }}@gitlab.com/${{ env.USERNAME }}/android_dump_${{ env.MANUFACTURER_NAME }}_${{ env.VENDOR_NAME }}.git
+        
+        # Updated Author Information
+        git config --global user.name "NoEscape Firmware Dumps"
+        git config --global user.email "bot@noescape-firmware-dumps.local"
+        
+        # Link to the dynamically created project path using standard GitLab oauth token formatting
+        git remote add origin "https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.com/${{ env.PROJECT_PATH }}.git"
+        
         find . -type f -size +100M -exec git lfs track {} \;
         if [ -f .gitattributes ]; then
-            git add .gitattributes
-            git commit -s -m "Setup Git LFS"
-            git push -u origin ${{ env.BRANCH }}
+             git add .gitattributes
+             git commit -s -m "Setup Git LFS"
+             git push -u origin ${{ env.BRANCH }}
         fi
         for dir in ${DUMP_DIR_LIST}; do
-            git add ${dir}
-            git commit -s -m "dump: ${dir}: import dump for ${VENDOR_NAME}
-            Firmware: ${{ github.event.inputs.FIRMWARE_LINK }}"
-            git push -u origin ${{ env.BRANCH }}
+             git add ${dir}
+             git commit -s -m "dump: ${dir}: import dump for ${VENDOR_NAME}
+             Firmware: ${{ github.event.inputs.FIRMWARE_LINK }}"
+             git push -u origin ${{ env.BRANCH }}
         done
         git add .
         git commit -s -m "dump: import remaining dump for ${VENDOR_NAME}
