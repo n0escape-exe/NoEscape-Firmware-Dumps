@@ -7,6 +7,10 @@ on:
         description: 'Firmware Link'
         required: true
         default: ''
+      TARGET_PATH:
+        description: 'Target Path (e.g., ONEPLUS/larry). Leave blank to auto-detect.'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -67,14 +71,25 @@ jobs:
     - name: Create Gitlab Repository
       run: |
         cd workspace
-        # Format names: uppercase OEM, keep device name as is
-        OEM_UPPER=$(echo "${{ env.MANUFACTURER_NAME }}" | tr '[:lower:]' '[:upper:]')
-        DEVICE="${{ env.VENDOR_NAME }}"
+        
+        TARGET_PATH="${{ github.event.inputs.TARGET_PATH }}"
+        
+        # Check if the user provided a custom TARGET_PATH (like ONEPLUS/larry)
+        if [ -n "$TARGET_PATH" ]; then
+          # Split the input into OEM and Device
+          OEM_UPPER=$(echo "$TARGET_PATH" | cut -d'/' -f1 | tr '[:lower:]' '[:upper:]')
+          DEVICE=$(echo "$TARGET_PATH" | cut -d'/' -f2)
+          # Override the VENDOR_NAME so commit messages use your custom device name
+          echo "VENDOR_NAME=$DEVICE" >> $GITHUB_ENV
+        else
+          # Fallback to auto-detection
+          OEM_UPPER=$(echo "${{ env.MANUFACTURER_NAME }}" | tr '[:lower:]' '[:upper:]')
+          DEVICE="${{ env.VENDOR_NAME }}"
+        fi
+        
         GROUP_NAME="noescape-firmware-dumps"
         
-        echo "OEM_UPPER=${OEM_UPPER}" >> $GITHUB_ENV
-        
-        # 1. Get ID of the main group (noescape-firmware-dumps)
+        # 1. Get ID of the main group
         PARENT_ID=$(curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" "https://gitlab.com/api/v4/groups/${GROUP_NAME}" | jq -r '.id')
         
         if [ "$PARENT_ID" == "null" ]; then
@@ -82,11 +97,11 @@ jobs:
           exit 1
         fi
         
-        # 2. Attempt to create the OEM subgroup (e.g., SAMSUNG). This silently fails if it already exists, which is fine.
+        # 2. Attempt to create the OEM subgroup (e.g., ONEPLUS). Silently fails if it already exists.
         curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" -X POST "https://gitlab.com/api/v4/groups" \
           --data "name=${OEM_UPPER}&path=${OEM_UPPER}&parent_id=${PARENT_ID}&visibility=public" > /dev/null
         
-        # 3. Fetch the Subgroup ID (using url-encoded path)
+        # 3. Fetch the Subgroup ID
         SUBGROUP_ID=$(curl -s --header "PRIVATE-TOKEN: ${{ secrets.GITLAB_TOKEN }}" "https://gitlab.com/api/v4/groups/${GROUP_NAME}%2F${OEM_UPPER}" | jq -r '.id')
         
         # 4. Create the Device project inside the OEM subgroup
@@ -97,7 +112,7 @@ jobs:
         PROJECT_PATH=$(echo "$PROJECT_RES" | jq -r '.path_with_namespace')
         
         if [ "$PROJECT_PATH" == "null" ] || [ -z "$PROJECT_PATH" ]; then
-          # Fallback in case the repo already exists so it doesn't crash the workflow
+          # Fallback pathing in case the repo already exists
           PROJECT_PATH="${GROUP_NAME}/${OEM_UPPER}/${DEVICE}"
         fi
         
@@ -116,11 +131,11 @@ jobs:
         find . \( -name "*sensetime*" -o -name "*.lic" \) | cut -d'/' -f'2-' >| .gitignore
         git branch -M ${{ env.BRANCH }}
         
-        # Updated Author Information
+        # Author Information for Group
         git config --global user.name "NoEscape Firmware Dumps"
         git config --global user.email "bot@noescape-firmware-dumps.local"
         
-        # Link to the dynamically created project path using standard GitLab oauth token formatting
+        # Link to the dynamically created project path
         git remote add origin "https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.com/${{ env.PROJECT_PATH }}.git"
         
         find . -type f -size +100M -exec git lfs track {} \;
